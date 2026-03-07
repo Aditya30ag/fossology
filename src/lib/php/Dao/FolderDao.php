@@ -168,18 +168,28 @@ class FolderDao
 
     $userGroupMap = $this->userDao->getUserGroupMap(Auth::getUserId());
 
-    $results = array();
+    // Batch fetch all upload counts in a single query
+    $folderRows = array();
     while ($row = $this->dbManager->fetchArray($res)) {
-      $countUploads = $this->countFolderUploads(intval($row['folder_pk']), $userGroupMap);
+      $folderRows[] = $row;
+    }
+    $this->dbManager->freeResult($res);
+
+    $folderIds = array_map(function($row) { return intval($row['folder_pk']); }, $folderRows);
+    $uploadCountsByFolder = $this->countFolderUploadsForFolders($folderIds, $userGroupMap);
+
+    $results = array();
+    foreach ($folderRows as $row) {
+      $folderId = intval($row['folder_pk']);
+      $countUploads = isset($uploadCountsByFolder[$folderId]) ? $uploadCountsByFolder[$folderId] : array();
 
       $results[] = array(
         self::FOLDER_KEY => new Folder(
-          intval($row['folder_pk']), $row['folder_name'], $row['folder_desc'], intval($row['folder_perm'])),
+          $folderId, $row['folder_name'], $row['folder_desc'], intval($row['folder_perm'])),
         self::DEPTH_KEY => $row['depth'],
         self::REUSE_KEY => $countUploads
       );
     }
-    $this->dbManager->freeResult($res);
     return $results;
   }
 
@@ -207,6 +217,44 @@ GROUP BY group_fk
     while ($row = $this->dbManager->fetchArray($res)) {
       $row['group_name'] = $userGroupMap[$row['group_id']];
       $results[$row['group_name']] = $row;
+    }
+    $this->dbManager->freeResult($res);
+    return $results;
+  }
+
+  /**
+   * Batch fetch upload counts for multiple folders in a single query (optimization)
+   * @param array $folderIds array of folder primary keys
+   * @param string[] $userGroupMap map groupId=>groupName
+   * @return array  map of folder_pk => array(group_id,count,group_name)
+   */
+  public function countFolderUploadsForFolders($folderIds, $userGroupMap)
+  {
+    if (empty($folderIds)) {
+      return array();
+    }
+    $trustGroupIds = array_keys($userGroupMap);
+    $statementName = __METHOD__;
+    $trustedGroups = '{' . implode(',', $trustGroupIds) . '}';
+    $folderIdList = '{' . implode(',', array_map('intval', $folderIds)) . '}';
+    $parameters = array($folderIdList, $trustedGroups);
+
+    $this->dbManager->prepare($statementName, "
+SELECT fc.parent_fk, group_fk group_id, count(*) FROM foldercontents fc
+  INNER JOIN upload u ON u.upload_pk = fc.child_id
+  INNER JOIN upload_clearing uc ON u.upload_pk=uc.upload_fk AND uc.group_fk=ANY($2)
+WHERE fc.parent_fk = ANY($1) AND fc.foldercontents_mode = " . self::MODE_UPLOAD . " AND (u.upload_mode = 100 OR u.upload_mode = 104)
+GROUP BY fc.parent_fk, group_fk
+");
+    $res = $this->dbManager->execute($statementName, $parameters);
+    $results = array();
+    while ($row = $this->dbManager->fetchArray($res)) {
+      $folderId = intval($row['parent_fk']);
+      $row['group_name'] = $userGroupMap[$row['group_id']];
+      if (!isset($results[$folderId])) {
+        $results[$folderId] = array();
+      }
+      $results[$folderId][$row['group_name']] = $row;
     }
     $this->dbManager->freeResult($res);
     return $results;
@@ -468,5 +516,36 @@ WHERE fc.parent_fk = $1 AND fc.foldercontents_mode = " . self::MODE_UPLOAD . ";"
     $statement = __METHOD__ . ".getParentId";
     $row = $this->dbManager->getSingleRow($sql, [$folderPk], $statement);
     return (empty($row)) ? null : $row['parent_fk'];
+  }
+
+  /**
+   * Batch fetch folder metadata and parent IDs for multiple folders (optimization)
+   * @param array $folderIds array of folder primary keys
+   * @return array map of folder_pk => array('folder' => Folder object, 'parent_id' => parent_fk)
+   */
+  public function getFoldersWithParentIds($folderIds)
+  {
+    if (empty($folderIds)) {
+      return array();
+    }
+    $folderIdList = '{' . implode(',', array_map('intval', $folderIds)) . '}';
+    $sql = "SELECT f.folder_pk, f.folder_name, f.folder_desc, f.folder_perm, fc.parent_fk
+            FROM folder f
+            LEFT JOIN foldercontents fc ON fc.foldercontents_mode = " . self::MODE_FOLDER . " AND f.folder_pk = fc.child_id
+            WHERE f.folder_pk = ANY($1)";
+    $statement = __METHOD__;
+    $this->dbManager->prepare($statement, $sql);
+    $res = $this->dbManager->execute($statement, array($folderIdList));
+
+    $results = array();
+    while ($row = $this->dbManager->fetchArray($res)) {
+      $folderId = intval($row['folder_pk']);
+      $results[$folderId] = array(
+        'folder' => new Folder($folderId, $row['folder_name'], $row['folder_desc'], intval($row['folder_perm'])),
+        'parent_id' => $row['parent_fk']
+      );
+    }
+    $this->dbManager->freeResult($res);
+    return $results;
   }
 }

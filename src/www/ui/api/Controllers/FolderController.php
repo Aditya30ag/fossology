@@ -65,13 +65,19 @@ class FolderController extends RestController
       GetFolderArray($rootFolder, $allUserFolders);
       $allUserFolders = array_keys($allUserFolders);
     }
+
+    // Batch fetch folder metadata and parent IDs in a single query
+    $folderMetadata = $folderDao->getFoldersWithParentIds($allUserFolders);
+
     $foldersList = array();
     foreach ($allUserFolders as $folderId) {
-      $folder = $folderDao->getFolder($folderId);
-      $parentId = $folderDao->getFolderParentId($folderId);
-      $folderModel = new Folder($folder->getId(), $folder->getName(),
-        $folder->getDescription(), $parentId);
-      $foldersList[] = $folderModel->getArray();
+      if (isset($folderMetadata[$folderId])) {
+        $folder = $folderMetadata[$folderId]['folder'];
+        $parentId = $folderMetadata[$folderId]['parent_id'];
+        $folderModel = new Folder($folder->getId(), $folder->getName(),
+          $folder->getDescription(), $parentId);
+        $foldersList[] = $folderModel->getArray();
+      }
     }
     if ($id !== null) {
       $foldersList = $foldersList[0];
