@@ -79,7 +79,7 @@ class LicenseCsvImport
    */
   public function setDelimiter($delimiter=',')
   {
-    $this->delimiter = substr($delimiter,0,1);
+    $this->delimiter = (empty($delimiter)) ? ',' : substr($delimiter, 0, 1);
   }
 
   /**
@@ -88,7 +88,7 @@ class LicenseCsvImport
    */
   public function setEnclosure($enclosure='"')
   {
-    $this->enclosure = substr($enclosure,0,1);
+    $this->enclosure = (empty($enclosure)) ? '"' : substr($enclosure, 0, 1);
   }
 
   /**
